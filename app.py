@@ -247,11 +247,12 @@ elif seccion == "🤖 Diagnóstico IA y Ajustes":
                        - Mejoras Priorizadas
                        - Prototipo Ajustado
                     """
-                    respuesta = client_ai.models.generate_content(
-                        model='gemini-2.5-flash',
-                        contents=prompt,
-                        config=types.GenerateContentConfig(temperature=0.2)
-                    )
+# CÓDIGO ACTUALIZADO:
+respuesta = client_ai.models.generate_content(
+    model='gemini-3.8-flash',
+    contents=prompt,
+    config=types.GenerateContentConfig(temperature=0.2)
+)
                     st.markdown("### 📋 Resultados del Diagnóstico IA")
                     st.markdown(respuesta.text)
 
