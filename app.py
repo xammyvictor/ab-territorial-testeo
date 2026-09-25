@@ -1,23 +1,44 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from streamlit_gsheets import GSheetsConnection
+import gspread
+from google.oauth2.service_account import Credentials
 from google import genai
 from google.genai import types
 
+# Configuración de página
 st.set_page_config(
     page_title="Lab Territorial - Testeo y Validación",
     page_icon="🌱",
     layout="wide"
 )
 
-# Inicializar cliente Gemini con la clave de secrets
+# Inicializar cliente Gemini
 api_key = st.secrets.get("GEMINI_API_KEY")
 client_ai = genai.Client(api_key=api_key) if api_key else None
 
-# Conexión nativa con Google Sheets
-conn = st.connection("gsheets", type=GSheetsConnection)
+# Configuración de conexión nativa con gspread
+@st.cache_resource
+def obtener_conexion_gsheet():
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    # Extrae las credenciales del service_account configurado en secrets.toml
+    creds_dict = dict(st.secrets["connections"]["gsheets"])
+    spreadsheet_url = creds_dict.pop("spreadsheet")
+    credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    gc = gspread.authorize(credentials)
+    sh = gc.open_by_url(spreadsheet_url)
+    return sh
 
+try:
+    sh = obtener_conexion_gsheet()
+except Exception as e:
+    st.error(f"Error de conexión con Google Sheets: {e}")
+    st.stop()
+
+# Estructura del proyecto según la propuesta técnica
 ORGANIZACIONES_POR_MUNICIPIO = {
     "Florida": [
         "Asociación comunitaria indígena de la Rivera - ASOACIR",
@@ -40,6 +61,15 @@ CRITERIOS = [
     "Diferenciacion", "Potencial", "Agregacion"
 ]
 
+def cargar_hoja(worksheet_name):
+    try:
+        ws = sh.worksheet(worksheet_name)
+        data = ws.get_all_records()
+        return pd.DataFrame(data)
+    except Exception as e:
+        return pd.DataFrame()
+
+# Menú lateral
 st.sidebar.title("🌱 Lab de Innovación")
 st.sidebar.caption("Fase 4: Testeo Comunitario e IA")
 seccion = st.sidebar.radio("Navegación:", [
@@ -97,44 +127,45 @@ if seccion == "📝 Encuesta de Validación (Campo)":
             if not prototipo.strip():
                 st.error("Ingrese el nombre del prototipo antes de guardar.")
             else:
-                nueva_fila = pd.DataFrame([{
-                    "Municipio": muni,
-                    "Organizacion": org,
-                    "Prototipo": prototipo.strip(),
-                    "Perfil_Evaluador": perfil,
-                    **califs,
-                    "Intencion": intencion,
-                    "Precio": precio,
-                    "Positivos": pos,
-                    "Dudas": dudas,
-                    "Criticas": crit,
-                    "Mejoras": mejoras
-                }])
+                fila_a_insertar = [
+                    muni,
+                    org,
+                    prototipo.strip(),
+                    perfil,
+                    califs["Pertinencia"],
+                    califs["Funcionalidad"],
+                    califs["Presentacion"],
+                    califs["Diferenciacion"],
+                    califs["Potencial"],
+                    califs["Agregacion"],
+                    intencion,
+                    precio,
+                    pos,
+                    dudas,
+                    crit,
+                    mejoras
+                ]
                 try:
-                    df_actual = conn.read(worksheet="Encuestas", ttl=0)
-                    df_nuevo = pd.concat([df_actual, nueva_fila], ignore_index=True)
-                    conn.update(worksheet="Encuestas", data=df_nuevo)
+                    ws_encuestas = sh.worksheet("Encuestas")
+                    ws_encuestas.append_row(fila_a_insertar)
                     st.success(f"Evaluación guardada exitosamente en la nube para '{prototipo}'.")
                 except Exception as e:
-                    st.error(f"Error al sincronizar con Google Sheets: {e}")
+                    st.error(f"Error al guardar en Google Sheets: {e}")
 
 # -------------------------------------------------------------
 # 2. PANEL DE CONTROL E INDICADORES
 # -------------------------------------------------------------
 elif seccion == "📊 Panel de Control e Indicadores":
     st.header("Métricas de Validación y Apropiación")
-    try:
-        df_enc = conn.read(worksheet="Encuestas", ttl=5)
-    except Exception as e:
-        st.error(f"No se pudo consultar Google Sheets: {e}")
-        df_enc = pd.DataFrame()
+    df_enc = cargar_hoja("Encuestas")
 
-    if df_enc.empty or len(df_enc) == 0:
+    if df_enc.empty:
         st.warning("No hay encuestas almacenadas en Google Sheets todavía.")
     else:
         kpi1, kpi2, kpi3 = st.columns(3)
         total_eval = len(df_enc)
         
+        # Cálculo de favorabilidad
         ratings = df_enc[CRITERIOS].apply(pd.to_numeric, errors='coerce').values.flatten()
         favorables = (ratings >= 4).sum()
         total_preguntas = len(ratings[~pd.isna(ratings)])
@@ -146,7 +177,8 @@ elif seccion == "📊 Panel de Control e Indicadores":
             st.metric("Índice de Aceptación", f"{indice_favorabilidad:.1f}%", 
                       delta=f"{indice_favorabilidad - 70:.1f}% vs meta (70%)")
         with kpi3:
-            st.metric("Prototipos Evaluados", f"{df_enc['Prototipo'].nunique()} / 15")
+            total_prototipos = df_enc['Prototipo'].nunique() if 'Prototipo' in df_enc.columns else 0
+            st.metric("Prototipos Evaluados", f"{total_prototipos} / 15")
 
         st.divider()
         col_g1, col_g2 = st.columns(2)
@@ -159,7 +191,7 @@ elif seccion == "📊 Panel de Control e Indicadores":
 
         with col_g2:
             st.subheader("Promedio de Criterios Técnicos")
-            promedios = df_enc[CRITERIOS].apply(pd.to_numeric).mean().reset_index()
+            promedios = df_enc[CRITERIOS].apply(pd.to_numeric, errors='coerce').mean().reset_index()
             promedios.columns = ["Criterio", "Promedio"]
             fig_radar = px.line_polar(promedios, r="Promedio", theta="Criterio", line_close=True, range_r=[1, 5])
             st.plotly_chart(fig_radar, use_container_width=True)
@@ -169,12 +201,9 @@ elif seccion == "📊 Panel de Control e Indicadores":
 # -------------------------------------------------------------
 elif seccion == "🤖 Diagnóstico IA y Ajustes":
     st.header("Análisis con IA: Síntesis de Saberes y Oportunidades")
-    st.write("Gemini procesa las evaluaciones de la comunidad y redacta los ajustes para el informe final.")
+    st.write("Gemini procesa las evaluaciones comunitarias y redacta los ajustes para el informe final.")
 
-    try:
-        df_enc = conn.read(worksheet="Encuestas", ttl=5)
-    except Exception:
-        df_enc = pd.DataFrame()
+    df_enc = cargar_hoja("Encuestas")
 
     if df_enc.empty:
         st.warning("Se requieren encuestas previas en Google Sheets para ejecutar el análisis.")
@@ -183,11 +212,11 @@ elif seccion == "🤖 Diagnóstico IA y Ajustes":
         proto_sel = st.selectbox("Seleccione el prototipo a evaluar:", prototipos_disponibles)
         df_filtrado = df_enc[df_enc["Prototipo"] == proto_sel]
 
-        promedio_proto = df_filtrado[CRITERIOS].apply(pd.to_numeric).mean().to_dict()
-        comentarios_positivos = " | ".join(df_filtrado["Positivos"].dropna().tolist())
-        comentarios_dudas = " | ".join(df_filtrado["Dudas"].dropna().tolist())
-        comentarios_criticas = " | ".join(df_filtrado["Criticas"].dropna().tolist())
-        comentarios_mejoras = " | ".join(df_filtrado["Mejoras"].dropna().tolist())
+        promedio_proto = df_filtrado[CRITERIOS].apply(pd.to_numeric, errors='coerce').mean().to_dict()
+        comentarios_positivos = " | ".join(df_filtrado["Positivos"].astype(str).tolist())
+        comentarios_dudas = " | ".join(df_filtrado["Dudas"].astype(str).tolist())
+        comentarios_criticas = " | ".join(df_filtrado["Criticas"].astype(str).tolist())
+        comentarios_mejoras = " | ".join(df_filtrado["Mejoras"].astype(str).tolist())
         municipio_asoc = df_filtrado["Municipio"].iloc[0]
         org_asoc = df_filtrado["Organizacion"].iloc[0]
 
@@ -235,18 +264,17 @@ elif seccion == "🤖 Diagnóstico IA y Ajustes":
                         btn_guardar_bd = st.form_submit_button("Guardar en Pestaña 'Ajustes'")
 
                         if btn_guardar_bd:
+                            fila_ajuste = [
+                                municipio_asoc,
+                                org_asoc,
+                                proto_sel,
+                                v_ini,
+                                v_mej,
+                                v_fin
+                            ]
                             try:
-                                df_aj_actual = conn.read(worksheet="Ajustes", ttl=0)
-                                fila_ajuste = pd.DataFrame([{
-                                    "Municipio": municipio_asoc,
-                                    "Organizacion": org_asoc,
-                                    "Prototipo": proto_sel,
-                                    "Version_Inicial": v_ini,
-                                    "Mejora_Propuesta": v_mej,
-                                    "Prototipo_Ajustado": v_fin
-                                }])
-                                df_aj_nuevo = pd.concat([df_aj_actual, fila_ajuste], ignore_index=True)
-                                conn.update(worksheet="Ajustes", data=df_aj_nuevo)
-                                st.success("Ajuste registrado oficialmente en Google Sheets.")
+                                ws_ajustes = sh.worksheet("Ajustes")
+                                ws_ajustes.append_row(fila_ajuste)
+                                st.success("Ajuste registrado oficialmente en la pestaña 'Ajustes' de Google Sheets.")
                             except Exception as err:
                                 st.error(f"Error al guardar ajuste: {err}")
