@@ -5,6 +5,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 from google import genai
 from google.genai import types
+import time
 
 # -------------------------------------------------------------
 # CONFIGURACIÓN GENERAL DE LA APLICACIÓN
@@ -287,19 +288,19 @@ elif seccion == "🤖 Diagnóstico IA y Ajustes":
                        - Mejoras Priorizadas de la Comunidad (mínimo 2 mejoras)
                        - Prototipo Ajustado / Versión Final
                     """
-                    
-                    # Lista de modelos compatibles para tolerancia a fallos 503/404
-                    modelos_candidatos = [
-                        'gemini-2.5-flash',
+
+                    # Lista priorizada de modelos para respaldo automático en caso de congestión
+                    modelos_prioritarios = [
                         'gemini-2.0-flash',
-                        'gemini-1.5-flash',
+                        'gemini-2.0-flash-lite',
+                        'gemini-2.5-pro',
                         'gemini-3.8-flash'
                     ]
-                    
+
                     respuesta = None
                     ultimo_error = None
 
-                    for nombre_modelo in modelos_candidatos:
+                    for nombre_modelo in modelos_prioritarios:
                         try:
                             respuesta = client_ai.models.generate_content(
                                 model=nombre_modelo,
@@ -310,13 +311,14 @@ elif seccion == "🤖 Diagnóstico IA y Ajustes":
                                 break
                         except Exception as e:
                             ultimo_error = e
+                            time.sleep(2)  # Pausa breve antes de intentar con el siguiente modelo
                             continue
 
                     if respuesta and hasattr(respuesta, 'text') and respuesta.text:
                         st.markdown("### 📋 Resultados del Diagnóstico IA")
                         st.markdown(respuesta.text)
                     else:
-                        st.error(f"Servicio saturado temporalmente. Intente de nuevo en segundos. Detalle: {ultimo_error}")
+                        st.error(f"Los servidores de IA están temporalmente saturados. Por favor presiona de nuevo en 30 segundos. Detalle: {ultimo_error}")
 
                     st.divider()
                     st.subheader("Guardar Ajuste Oficial en Google Sheets")
